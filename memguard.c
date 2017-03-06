@@ -60,6 +60,23 @@
 #  define DEBUG_RECLAIM(x)
 #  define DEBUG_USER(x)
 #endif
+/**************************************************************************
+ * issues under 4.4 kernel
+ *************************************************************************/
+#if LINUX_VERSION_CODE > KERNEL_VERSION(3, 8, 0)
+#  define __cpuinit         __section(.cpuinit.text) __cold notrace
+#  define __cpuinitdata     __section(.cpuinit.data)
+#  define __cpuinitconst    __constsection(.cpuinit.rodata)
+#  define __cpuexit         __section(.cpuexit.text) __exitused __cold notrace
+#  define __cpuexitdata     __section(.cpuexit.data)
+#  define __cpuexitconst    __constsection(.cpuexit.rodata)
+
+
+#  define __CPUINIT         .section      ".cpuinit.text", "ax"
+#  define __CPUINITDATA     .section      ".cpuinit.data", "aw"
+#  define __CPUINITRODATA   .section      ".cpuinit.rodata", "a"
+  
+#endif
 
 /**************************************************************************
  * Public Types
@@ -85,6 +102,7 @@ struct core_info {
 	int weight;              /* weight mode (exclusive to limit)*/
 	int wsum;                /* local copy of global->wsum */
 
+        int cnt;
 	/* for control logic */
 	int cur_budget;          /* currently available budget */
 
@@ -370,7 +388,9 @@ static void event_overflow_callback(struct perf_event *event,
 				    struct pt_regs *regs)
 {
 	struct core_info *cinfo = this_cpu_ptr(core_info);
-	BUG_ON(!cinfo);
+        //trace_printk("overflow_callback\n");
+
+        BUG_ON(!cinfo);
 	irq_work_queue(&cinfo->pending);
 }
 
@@ -468,11 +488,12 @@ static void __newperiod(void *info)
  * memory overflow handler.
  * must not be executed in NMI context. but in hard irq context
  */
+static int ii=0;
 static void memguard_process_overflow(struct irq_work *entry)
 {
 	struct core_info *cinfo = this_cpu_ptr(core_info);
 	struct memguard_info *global = &memguard_info;
-
+       
 	int amount = 0;
 	ktime_t start = ktime_get();
 	s64 budget_used;
@@ -502,12 +523,14 @@ static void memguard_process_overflow(struct irq_work *entry)
 		return;
 	}
 
+	DEBUG_RECLAIM(trace_printk("Hello\n"));
+
 	/* try to reclaim budget from the global pool */
 	amount = request_budget(cinfo);
 	if (amount > 0) {
 		cinfo->cur_budget += amount;
 		local64_set(&cinfo->event->hw.period_left, amount);
-		DEBUG_RECLAIM(trace_printk("successfully reclaimed %d\n", amount));
+		DEBUG_RECLAIM(trace_printk("!!!successfully reclaimed %d\n", amount));
 		return;
 	}
 
@@ -759,7 +782,8 @@ static void __init_per_core(void *info)
 	memset(cinfo, 0, sizeof(struct core_info));
 
 	smp_rmb();
-
+        
+        cinfo->cnt = 0;
 	/* initialize per_event structure */
 	cinfo->event = (struct perf_event *)info;
 
@@ -1027,7 +1051,7 @@ static ssize_t memguard_limit_write(struct file *filp,
 		sscanf(p, "%d", &input);
 		if (!use_mb)
 			input = g_budget_max_bw*100/input;
-		events = (unsigned long)convert_mb_to_events(input);
+ 		events = (unsigned long)convert_mb_to_events(input);
 		max_budget += events;
 		pr_info("CPU%d: New budget=%ld (%d %s)\n", i, 
 			events, input, (use_mb)?"MB/s": "pct");
